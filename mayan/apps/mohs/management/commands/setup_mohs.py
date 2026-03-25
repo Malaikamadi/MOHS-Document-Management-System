@@ -10,6 +10,11 @@ Run after migrate (and optional initialsetup):
     python manage.py setup_mohs --with-auditor
 
 Safe to run multiple times (idempotent).
+
+Also ensures a Document index "MoHS — Records by type" (slug: mohs_record_types)
+so Indexes group documents by document type label (browse by record class).
+
+Preview without Django: python3 mayan/apps/mohs/scripts/print_mohs_plan.py
 """
 from django.contrib.auth.models import Group
 from django.contrib.contenttypes.models import ContentType
@@ -42,6 +47,7 @@ from mayan.apps.metadata.permissions import (
     permission_document_metadata_edit,
     permission_document_metadata_view,
 )
+from mayan.apps.document_indexing.models import Index, IndexTemplateNode
 from mayan.apps.permissions.classes import Permission
 from mayan.apps.permissions.models import Role
 
@@ -58,7 +64,7 @@ def _stored(*permissions):
 class Command(BaseCommand):
     help = (
         'Create MoHS directorate groups, roles, cabinets, document types, '
-        'metadata, and ACLs (idempotent).'
+        'metadata, ACLs, and MoHS document index (idempotent).'
     )
 
     def add_arguments(self, parser):
@@ -76,6 +82,8 @@ class Command(BaseCommand):
         Permission.initialize()
         self._validate_record_type_label_lengths()
 
+        index = None
+        index_rebuild = False
         with transaction.atomic():
             meta_types = self._ensure_metadata_types()
             for code, cabinet_label, _full_name in MOHS_DIRECTORATES:
@@ -86,6 +94,11 @@ class Command(BaseCommand):
                 )
             if options['with_auditor']:
                 self._ensure_auditor_readonly()
+            index, index_rebuild = self._ensure_mohs_document_index()
+
+        if index and index_rebuild:
+            self.stdout.write('Rebuilding document index "%s"...' % index.label)
+            index.rebuild()
 
         self.stdout.write(
             self.style.SUCCESS(
@@ -95,6 +108,11 @@ class Command(BaseCommand):
                 % len(MOHS_DIRECTORATES)
             )
         )
+        if index:
+            self.stdout.write(
+                'Document index: %s (slug=%s) — Indexes app, by record type.'
+                % (index.label, index.slug)
+            )
         if options['with_auditor']:
             self.stdout.write(
                 self.style.SUCCESS(
@@ -102,6 +120,51 @@ class Command(BaseCommand):
                     'MoHS_Auditor_ReadOnly.'
                 )
             )
+
+    def _ensure_mohs_document_index(self):
+        """
+        One-level index: each document is filed under its document type label.
+        Only MoHS document types are attached.
+        """
+        index, created = Index.objects.get_or_create(
+            slug='mohs_record_types',
+            defaults={
+                'label': 'MoHS — Records by type',
+                'enabled': True,
+            },
+        )
+        needs_rebuild = created
+
+        document_types = []
+        for code, _, _ in MOHS_DIRECTORATES:
+            for category in mohs_record_types_for(code):
+                lbl = '%s – %s' % (code, category)
+                dt = DocumentType.objects.filter(label=lbl).first()
+                if dt:
+                    document_types.append(dt)
+
+        existing_ids = set(
+            index.document_types.values_list('pk', flat=True)
+        )
+        target_ids = {dt.pk for dt in document_types}
+        new_ids = target_ids - existing_ids
+        if new_ids:
+            index.document_types.add(
+                *DocumentType.objects.filter(pk__in=new_ids)
+            )
+            needs_rebuild = True
+
+        root = index.template_root
+        if not root.get_children().exists():
+            IndexTemplateNode.objects.create(
+                parent=root,
+                index=index,
+                expression='{{ document.document_type.label }}',
+                link_documents=True,
+            )
+            needs_rebuild = True
+
+        return index, needs_rebuild
 
     def _ensure_metadata_types(self):
         specs = (

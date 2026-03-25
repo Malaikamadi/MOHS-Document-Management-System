@@ -116,6 +116,8 @@ INSTALLED_APPS = (
     'mayan.apps.storage',
     'mayan.apps.tags',
     'mayan.apps.web_links',
+    # MoHS (Sierra Leone) — directorate bootstrap (see setup_mohs command)
+    'mayan.apps.mohs',
     # Placed after rest_api to allow template overriding
     'drf_yasg',
 )

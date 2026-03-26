@@ -19,7 +19,7 @@ Preview without Django: python3 mayan/apps/mohs/scripts/print_mohs_plan.py
 from django.contrib.auth.models import Group
 from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import connection, transaction
 
 from mayan.apps.acls.models import AccessControlList
 from mayan.apps.cabinets.models import Cabinet
@@ -61,6 +61,14 @@ def _stored(*permissions):
     return [p.stored_permission for p in permissions]
 
 
+def _sqlite_busy_timeout_ms(milliseconds=60000):
+    """Wait on SQLite locks (e.g. dev server) instead of failing immediately."""
+    if connection.vendor != 'sqlite':
+        return
+    with connection.cursor() as cursor:
+        cursor.execute('PRAGMA busy_timeout=%d' % int(milliseconds))
+
+
 class Command(BaseCommand):
     help = (
         'Create MoHS directorate groups, roles, cabinets, document types, '
@@ -80,6 +88,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         Permission.initialize()
+        _sqlite_busy_timeout_ms()
         self._validate_record_type_label_lengths()
 
         index = None
